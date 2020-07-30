@@ -2,7 +2,8 @@
 
 ## Packages
 
-* dynamodbutils: simple methods for PutItem, GetItem, UpdateItem, PutItemWithConditional, FindOneFromIndex
+* cognitoutils: simple methods for CreateUser
+* dynamodbutils: simple methods for PutItem, GetItem, UpdateItem, PutItemWithConditional, FindOneFromIndex, Query
 * s3utils: simple methods for GetObject, GetObjectAsString, ListObjects, PutObject.
 * snsutils: simple methods for SendMessage, SendMessageWithAttributes.
 * sqsutils: simple methods for SendMessage, ReadMessage, DeleteMessage, GetMessageAttribute
