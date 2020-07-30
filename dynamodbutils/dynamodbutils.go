@@ -2,8 +2,10 @@ package dynamodbutils
 
 import (
 	"errors"
+	"fmt"
+	"reflect"
 
-	"stash.b2w/asp/aws-utils-go.git/sessionutils"
+	"github.com/AmeDigital/aws-utils-go/sessionutils"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/dynamodb"
@@ -72,6 +74,33 @@ func UpdateItem(tablename string, key Key, fields map[string]interface{}) (err e
 	}
 
 	_, err = svc.UpdateItem(input)
+
+	return err
+}
+
+// DeleteItem - deletes an item from dynamodb
+// Note: this function won't return error if the item was not found on the table.
+func DeleteItem(tablename string, key Key) (err error) {
+	svc := dynamodb.New(sessionutils.Session)
+
+	keyAttributes := make(map[string]*dynamodb.AttributeValue)
+
+	keyAttributes[key.PKName], err = dynamodbattribute.Marshal(key.PKValue)
+	if err != nil {
+		return err
+	}
+
+	if len(key.SKName) > 0 {
+		keyAttributes[key.SKName], err = dynamodbattribute.Marshal(key.SKValue)
+		if err != nil {
+			return err
+		}
+	}
+
+	_, err = svc.DeleteItem(&dynamodb.DeleteItemInput{
+		TableName: &tablename,
+		Key:       keyAttributes,
+	})
 
 	return err
 }
@@ -229,6 +258,172 @@ func PutItemWithConditional(tablename string, item interface{}, conditionalExpre
 
 	dynamodbClient := dynamodb.New(sessionutils.Session)
 	_, err = dynamodbClient.PutItem(putItemInput)
+
+	return err
+}
+
+// KeyCondition allows you set the parameters for a query with 'key condition expression'
+// ref https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Query.html#Query.KeyConditionExpressions
+//   - IndexName: optional. If this value is set the query will run on the index table.
+//   - PKName: primary key name, mandatory.
+//   - PKValue: primary key value, mandatory.
+//   - SKName: sort key name, optional. You must set this value if you what to use the conditions that operate on the sort keys.
+//   - SKValueEqual: selects an item with the sort key value equal to the given value
+//   - SKValueLessThan: selects items having the sort key value less than the given value
+//   - SKValueLessThanEqual: selects items having the sort key value less than or equal to the the given value
+//   - SKValueGreaterThan: selects items having the sort key value greater than the given value
+//   - SKValueGreaterThanEqual: selects items having the sort key value greater than or equal to the the given value
+//   - SKValueBetweenStart and SKValueBetweenEnd: selects items having the sort key value between the given limits, including the limiting items.
+type KeyCondition struct {
+	IndexName               string      // optional
+	PKName                  string      // mandatory
+	PKValue                 interface{} // mandatory
+	SKName                  string      // optional
+	SKValueEqual            interface{} // optional
+	SKValueLessThan         interface{} // optional
+	SKValueLessThanEqual    interface{} // optional
+	SKValueGreaterThan      interface{} // optional
+	SKValueGreaterThanEqual interface{} // optional
+	SKValueBetweenStart     interface{} // optional
+	SKValueBetweenEnd       interface{} // optional
+}
+
+// Runs the query specified by the keyCondition argument on the given table or index and fills the slice
+// pointed by 'pointerToOutputSlice' with the items found, if any.
+func Query(tablename string, keyCondition KeyCondition, pointerToOuputSlice interface{}) (err error) {
+	rv := reflect.ValueOf(pointerToOuputSlice)
+	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Slice {
+		return fmt.Errorf("dynamodbutils.Query: pointerToOutputSlice must be a slice pointer")
+	}
+
+	dynamodbClient := dynamodb.New(sessionutils.Session)
+
+	attributeValues := make(map[string]*dynamodb.AttributeValue)
+	attributeNames := make(map[string]*string)
+
+	var keyConditionExpression = "#pkname = :pkval"
+
+	attributeNames["#pkname"] = &keyCondition.PKName
+
+	attributeValues[":pkval"], err = dynamodbattribute.Marshal(keyCondition.PKValue)
+	if err != nil {
+		return err
+	}
+
+	if len(keyCondition.SKName) > 0 {
+		var err error
+
+		attributeNames["#skname"] = &keyCondition.SKName
+
+		if keyCondition.SKValueEqual != nil {
+			keyConditionExpression = keyConditionExpression + " and #skname = :skval"
+			attributeValues[":skval"], err = dynamodbattribute.Marshal(keyCondition.SKValueEqual)
+
+		} else if keyCondition.SKValueBetweenStart != nil && keyCondition.SKValueBetweenEnd != nil {
+			keyConditionExpression = keyConditionExpression + " and #skname BETWEEN :skval1 AND :skval2"
+			attributeValues[":skval1"], err = dynamodbattribute.Marshal(keyCondition.SKValueBetweenStart)
+			if err == nil {
+				attributeValues[":skval2"], err = dynamodbattribute.Marshal(keyCondition.SKValueBetweenEnd)
+			}
+
+		} else if keyCondition.SKValueGreaterThan != nil {
+			keyConditionExpression = keyConditionExpression + " and #skname > :skval"
+			attributeValues[":skval"], err = dynamodbattribute.Marshal(keyCondition.SKValueGreaterThan)
+
+		} else if keyCondition.SKValueGreaterThanEqual != nil {
+			keyConditionExpression = keyConditionExpression + " and #skname >= :skval"
+			attributeValues[":skval"], err = dynamodbattribute.Marshal(keyCondition.SKValueGreaterThanEqual)
+
+		} else if keyCondition.SKValueLessThan != nil {
+			keyConditionExpression = keyConditionExpression + " and #skname < :skval"
+			attributeValues[":skval"], err = dynamodbattribute.Marshal(keyCondition.SKValueLessThan)
+
+		} else if keyCondition.SKValueLessThanEqual != nil {
+			keyConditionExpression = keyConditionExpression + " and #skname <= :skval"
+			attributeValues[":skval"], err = dynamodbattribute.Marshal(keyCondition.SKValueLessThanEqual)
+
+		} else {
+			return errors.New("keyCondition is invalid")
+		}
+		if err != nil {
+			return err
+		}
+	}
+
+	queryInput := dynamodb.QueryInput{
+		TableName:                 &tablename,
+		KeyConditionExpression:    &keyConditionExpression,
+		ExpressionAttributeValues: attributeValues,
+		ExpressionAttributeNames:  attributeNames,
+	}
+
+	if len(keyCondition.IndexName) > 0 {
+		queryInput.IndexName = &keyCondition.IndexName
+	}
+
+	queryOutput, err := dynamodbClient.Query(&queryInput)
+
+	if err != nil {
+		return err
+	}
+
+	if len(queryOutput.Items) == 0 {
+		return nil
+	}
+
+	err = dynamodbattribute.UnmarshalListOfMaps(queryOutput.Items, pointerToOuputSlice)
+
+	return err
+}
+
+// Retrieves a list of items identified by their keys from the given table and fills the slice
+// pointed by 'pointerToOutputSlice' with the items found, if any
+func BatchGetItem(tablename string, keys []Key, pointerToOuputSlice interface{}) (err error) {
+	rv := reflect.ValueOf(pointerToOuputSlice)
+	if rv.Kind() != reflect.Ptr || rv.Elem().Kind() != reflect.Slice {
+		return fmt.Errorf("dynamodbutils.BatchGetItem: pointerToOutputSlice must be a slice pointer")
+	}
+
+	dynamodbClient := dynamodb.New(sessionutils.Session)
+
+	keyAttributesListOfMaps := []map[string]*dynamodb.AttributeValue{}
+
+	for _, key := range keys {
+		keyAttributesMap := make(map[string]*dynamodb.AttributeValue)
+
+		keyAttributesMap[key.PKName], err = dynamodbattribute.Marshal(key.PKValue)
+		if err != nil {
+			return err
+		}
+
+		if len(key.SKName) > 0 {
+			keyAttributesMap[key.SKName], err = dynamodbattribute.Marshal(key.SKValue)
+			if err != nil {
+				return err
+			}
+		}
+
+		keyAttributesListOfMaps = append(keyAttributesListOfMaps, keyAttributesMap)
+	}
+
+	input := &dynamodb.BatchGetItemInput{
+		RequestItems: map[string]*dynamodb.KeysAndAttributes{
+			tablename: {
+				Keys: keyAttributesListOfMaps,
+			},
+		},
+	}
+
+	result, err := dynamodbClient.BatchGetItem(input)
+	if err != nil {
+		return err
+	}
+
+	resultsForThisTable := result.Responses[tablename]
+
+	if len(resultsForThisTable) > 0 {
+		err = dynamodbattribute.UnmarshalListOfMaps(resultsForThisTable, pointerToOuputSlice)
+	}
 
 	return err
 }

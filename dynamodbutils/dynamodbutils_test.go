@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
-	"stash.b2w/asp/aws-utils-go.git/localstack"
-	"stash.b2w/asp/aws-utils-go.git/sessionutils"
+	"github.com/AmeDigital/aws-utils-go/localstack"
+	"github.com/AmeDigital/aws-utils-go/sessionutils"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -170,6 +171,26 @@ func TestPutItemUpdateItemAndGetItem(t *testing.T) {
 	}
 }
 
+func TestPutItemWithConditionalAvoidOverrideExistingItem(t *testing.T) {
+	city := City{
+		State:      "MG",
+		Id:         100,
+		Name:       "Tiradentes",
+		Population: 50000,
+		Aliases:    []string{"Tira"},
+	}
+
+	err := PutItemWithConditional(tablename, city, "attribute_not_exists(Id)", nil)
+	check(err)
+
+	err = PutItemWithConditional(tablename, city, "attribute_not_exists(Id)", nil)
+	if err == nil {
+		t.Error("should not accept overrite item")
+	} else if !strings.Contains(err.Error(), "ConditionalCheckFailedException") {
+		t.Errorf("error should be of type 'ConditionalCheckFailedException' but was %s\n", err.Error())
+	}
+}
+
 func TestFindOneFromIndex(t *testing.T) {
 
 	var err error
@@ -205,6 +226,234 @@ func TestFindOneFromIndex(t *testing.T) {
 	}
 }
 
+// func constructor() interface{} {
+// 	return &City{}
+// }
+
+func TestPointers(t *testing.T) {
+	var product interface{} = City{}
+	productType := reflect.TypeOf(product)       // this type of this variable is reflect.Type
+	productPointer := reflect.New(productType)   // this type of this variable is reflect.Value.
+	productValue := productPointer.Elem()        // this type of this variable is reflect.Value.
+	productInterface := productValue.Interface() // this type of this variable is interface{}
+	product2 := productInterface.(City)          // this type of this variable is product
+	product2.Name = "BH"
+}
+
+func TestQuery(t *testing.T) {
+	bh := City{
+		Name:  "Belo Horizonte",
+		Id:    1,
+		State: "MG",
+	}
+
+	divinopolis := City{
+		Name:  "Divinópolis",
+		Id:    2,
+		State: "MG",
+	}
+
+	PutItem(tablename, bh)
+	PutItem(tablename, divinopolis)
+
+	var cities = []City{}
+
+	// testing when sort key is equal to a value
+	keyCondition := KeyCondition{
+		PKName:       "State",
+		PKValue:      "MG",
+		SKName:       "Id",
+		SKValueEqual: 1,
+	}
+
+	err := Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 1 {
+		t.Error(fmt.Sprintf("cities should have length 1 but has %d", len(cities)))
+	} else {
+		city := cities[0]
+		if city.Name != "Belo Horizonte" {
+			t.Error(fmt.Sprintf("City name should be 'Belo Horizonte' but was '%s'", city.Name))
+		}
+		if city.State != "MG" {
+			t.Error(fmt.Sprintf("City state should be 'MG' but was '%s'", city.State))
+		}
+		if city.Id != 1 {
+			t.Error(fmt.Sprintf("City id should be '1' but was '%d'", city.Id))
+		}
+	}
+
+	// testing when sort key is equal to a value on the INDEX table
+	keyCondition = KeyCondition{
+		IndexName: indexname,
+		PKName:    "Name",
+		PKValue:   "Belo Horizonte",
+	}
+
+	err = Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 1 {
+		t.Error(fmt.Sprintf("cities should have length 1 but has %d", len(cities)))
+	} else if !reflect.DeepEqual(cities[0], bh) {
+		t.Errorf("A busca no indice falhou: %+v", cities[0])
+	}
+
+	// testing when sork key is greater than a value
+	keyCondition = KeyCondition{
+		PKName:             "State",
+		PKValue:            "MG",
+		SKName:             "Id",
+		SKValueGreaterThan: 1,
+	}
+
+	err = Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 1 {
+		t.Error(fmt.Sprintf("cities should have length 1 but has %d", len(cities)))
+	} else {
+		city := cities[0]
+		if city.Name != "Divinópolis" {
+			t.Error(fmt.Sprintf("City name should be 'Divinópolis' but was '%s'", city.Name))
+		}
+	}
+
+	// testing when sork key is greater than equal a value
+	keyCondition = KeyCondition{
+		PKName:                  "State",
+		PKValue:                 "MG",
+		SKName:                  "Id",
+		SKValueGreaterThanEqual: 1,
+	}
+
+	err = Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 2 {
+		t.Error(fmt.Sprintf("cities should have length 2 but has %d", len(cities)))
+	} else {
+		city := cities[0]
+		if city.Id != 1 {
+			t.Error(fmt.Sprintf("City Id should be '1' but was '%d'", city.Id))
+		}
+		city = cities[1]
+		if city.Id != 2 {
+			t.Error(fmt.Sprintf("City Id should be '2' but was '%d'", city.Id))
+		}
+	}
+
+	// testing when sork key is less than a value
+	keyCondition = KeyCondition{
+		PKName:          "State",
+		PKValue:         "MG",
+		SKName:          "Id",
+		SKValueLessThan: 2,
+	}
+
+	err = Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 1 {
+		t.Error(fmt.Sprintf("cities should have length 1 but has %d", len(cities)))
+	} else {
+		city := cities[0]
+		if city.Id != 1 {
+			t.Error(fmt.Sprintf("City id should be '1' but was '%d'", city.Id))
+		}
+	}
+
+	// testing when sork key is less than equal a value
+	keyCondition = KeyCondition{
+		PKName:               "State",
+		PKValue:              "MG",
+		SKName:               "Id",
+		SKValueLessThanEqual: 2,
+	}
+
+	err = Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 2 {
+		t.Error(fmt.Sprintf("cities should have length 3 but has %d", len(cities)))
+	} else {
+		city := cities[0]
+		if city.Id != 1 {
+			t.Error(fmt.Sprintf("City id should be '1' but was '%d'", city.Id))
+		}
+		city = cities[1]
+		if city.Id != 2 {
+			t.Error(fmt.Sprintf("City id should be '2' but was '%d'", city.Id))
+		}
+	}
+
+	// testing when sort key is between two values
+	ouroPreto := City{
+		Name:  "Ouro Preto",
+		Id:    3,
+		State: "MG",
+	}
+
+	diamantina := City{
+		Name:  "Diamantina",
+		Id:    4,
+		State: "MG",
+	}
+
+	PutItem(tablename, ouroPreto)
+	PutItem(tablename, diamantina)
+
+	keyCondition = KeyCondition{
+		PKName:              "State",
+		PKValue:             "MG",
+		SKName:              "Id",
+		SKValueBetweenStart: 2,
+		SKValueBetweenEnd:   4,
+	}
+
+	err = Query(tablename, keyCondition, &cities)
+
+	if err != nil {
+		t.Error("Query() failed with error: " + err.Error())
+	} else if len(cities) != 3 {
+		t.Error(fmt.Sprintf("cities should have length 3 but has %d", len(cities)))
+	} else {
+		city := cities[0]
+		if city.Id != 2 {
+			t.Error(fmt.Sprintf("City id should be '2' but was '%d'", city.Id))
+		}
+		city = cities[1]
+		if city.Id != 3 {
+			t.Error(fmt.Sprintf("City id should be '3' but was '%d'", city.Id))
+		}
+		city = cities[2]
+		if city.Id != 4 {
+			t.Error(fmt.Sprintf("City id should be '4' but was '%d'", city.Id))
+		}
+	}
+
+	// test a non pointer output slice argument
+	err = Query(tablename, KeyCondition{}, []City{})
+	if err == nil {
+		t.Error("err should be depicting that argument should be a pointer to a slice")
+	}
+
+	// test a pointer to something that is not a slice
+	var dummy = "dummy"
+	err = Query(tablename, KeyCondition{}, &dummy)
+	if err == nil {
+		t.Error("err should be depicting that argument should be a pointer to a slice")
+	}
+
+}
+
 func TestGetInexistentItem(t *testing.T) {
 	newCity := City{}
 	key := Key{PKName: "State", PKValue: "bleh bleh", SKName: "Id", SKValue: 888}
@@ -234,4 +483,79 @@ func TestType(t *testing.T) {
 func get(items interface{}) {
 	itemType := reflect.TypeOf(items)
 	fmt.Println(itemType)
+}
+
+func TestBatchGetItem(t *testing.T) {
+	bh := City{
+		Name:  "Belo Horizonte",
+		Id:    1,
+		State: "MG",
+	}
+
+	divinopolis := City{
+		Name:  "Divinópolis",
+		Id:    2,
+		State: "MG",
+	}
+
+	ouroPreto := City{
+		Name:  "Ouro Preto",
+		Id:    3,
+		State: "MG",
+	}
+
+	PutItem(tablename, bh)
+	PutItem(tablename, divinopolis)
+	PutItem(tablename, ouroPreto)
+
+	cities := []City{}
+
+	keys := []Key{
+		Key{
+			PKName:  "State",
+			PKValue: "MG",
+			SKName:  "Id",
+			SKValue: 1,
+		},
+		Key{
+			PKName:  "State",
+			PKValue: "MG",
+			SKName:  "Id",
+			SKValue: 2,
+		},
+	}
+
+	err := BatchGetItem(tablename, keys, &cities)
+
+	if err != nil {
+		t.Error("BatchGetItem() failed with error: " + err.Error())
+	} else if len(cities) != 2 {
+		t.Error(fmt.Sprintf("cities should have length 2 but has %d", len(cities)))
+	} else {
+		if !reflect.DeepEqual(cities[0], bh) {
+			t.Error("city 0 is not bh")
+		} else if !reflect.DeepEqual(cities[1], divinopolis) {
+			t.Error("city 1 is not divinopolis")
+		}
+	}
+
+	// test query for inexistent item
+	keys = []Key{
+		Key{
+			PKName:  "State",
+			PKValue: "MG",
+			SKName:  "Id",
+			SKValue: 100,
+		},
+	}
+
+	cities = []City{}
+
+	err = BatchGetItem(tablename, keys, &cities)
+	if err != nil {
+		t.Error("BatchGetItem() failed with error: " + err.Error())
+	} else if len(cities) != 0 {
+		t.Error(fmt.Sprintf("cities should have length 0 but had %d", len(cities)))
+	}
+
 }
